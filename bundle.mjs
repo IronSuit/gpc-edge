@@ -596,44 +596,50 @@ async function refreshGamePrices(gameId) {
     }
   }
   const rows = [];
+  const tasks = [];
   if (steamLink?.external_id) {
     const appid = Number(steamLink.external_id);
     for (const reg of STEAM_REGIONS) {
-      try {
-        const p = await getSteamPrice(appid, reg.cc);
-        rows.push({
-          game_id: gameId,
-          store: "steam",
-          region_cc: reg.cc,
-          currency: p.available ? p.currency : reg.currency,
-          initial_cents: p.available ? p.initialCents : null,
-          final_cents: p.available ? p.finalCents : null,
-          discount_percent: p.discountPercent,
-          sales_status: p.available ? "onsale" : "unavailable"
-        });
-      } catch {
-      }
+      tasks.push((async () => {
+        try {
+          const p = await getSteamPrice(appid, reg.cc);
+          rows.push({
+            game_id: gameId,
+            store: "steam",
+            region_cc: reg.cc,
+            currency: p.available ? p.currency : reg.currency,
+            initial_cents: p.available ? p.initialCents : null,
+            final_cents: p.available ? p.finalCents : null,
+            discount_percent: p.discountPercent,
+            sales_status: p.available ? "onsale" : "unavailable"
+          });
+        } catch {
+        }
+      })());
     }
   }
   for (const reg of ESHOP_REGIONS) {
     const nsuid = reg.catalog ? eshopByCatalog.get(reg.catalog) : void 0;
     if (!nsuid) continue;
-    try {
-      const [price] = await getEshopPrices([nsuid], reg.cc.toUpperCase());
-      if (!price) continue;
-      rows.push({
-        game_id: gameId,
-        store: "eshop",
-        region_cc: reg.cc,
-        currency: price.available ? price.currency : reg.currency,
-        initial_cents: price.available ? price.initialCents : null,
-        final_cents: price.available ? price.finalCents : null,
-        discount_percent: price.discountPercent,
-        sales_status: price.salesStatus
-      });
-    } catch {
-    }
+    tasks.push((async () => {
+      try {
+        const [price] = await getEshopPrices([nsuid], reg.cc.toUpperCase());
+        if (!price) return;
+        rows.push({
+          game_id: gameId,
+          store: "eshop",
+          region_cc: reg.cc,
+          currency: price.available ? price.currency : reg.currency,
+          initial_cents: price.available ? price.initialCents : null,
+          final_cents: price.available ? price.finalCents : null,
+          discount_percent: price.discountPercent,
+          sales_status: price.salesStatus
+        });
+      } catch {
+      }
+    })());
   }
+  await Promise.all(tasks);
   await savePrices(rows);
 }
 async function refreshFx() {
