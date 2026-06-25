@@ -371,6 +371,10 @@ function sb() {
   });
   return _sb;
 }
+async function removeGame(gameId) {
+  const { error } = await sb().from("games").delete().eq("game_id", gameId);
+  if (error) throw error;
+}
 async function createGame(title) {
   const { data, error } = await sb().from("games").insert({ title }).select("game_id").single();
   if (error) throw error;
@@ -701,6 +705,13 @@ Deno.serve(async (req) => {
       }
       return _json({ found: items.length, added, skipped });
     }
+    if (route === "remove") {
+      const body = await req.json().catch(() => ({}));
+      const id = Number(body?.id);
+      if (!id) return _json({ error: "id required" }, 400);
+      await removeGame(id);
+      return _json({ ok: true });
+    }
     return _json({ error: `unknown route: ${route}` }, 404);
   } catch (e) {
     return _json({ error: String(e instanceof Error ? e.message : e) }, 500);
@@ -732,6 +743,7 @@ export {
   normalizeTitle,
   refreshFx,
   refreshGamePrices,
+  removeGame,
   resolveEshopFromCatalog,
   resolveEshopLive,
   saveFxRate,
