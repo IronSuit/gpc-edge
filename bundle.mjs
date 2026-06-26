@@ -148,7 +148,7 @@ function diceCoefficient(a, b) {
   }
   return 2 * overlap / (totalA + totalB);
 }
-function titleSimilarity(a, b) {
+function titleSimilarity(a, b, searchMode = false) {
   const na = normalizeTitle(a);
   const nb = normalizeTitle(b);
   if (!na || !nb) return 0;
@@ -162,7 +162,8 @@ function titleSimilarity(a, b) {
   const union = (/* @__PURE__ */ new Set([...ta, ...tb])).size;
   const jaccard = union ? inter / union : 0;
   const queryInCandidate = inter === ta.size && tb.size >= ta.size;
-  const querySubstantial = ta.size >= 2 && na.replace(/ /g, "").length >= 6 && /[a-z]{4}/.test(na);
+  const compact = na.replace(/ /g, "");
+  const querySubstantial = /[a-z]{4}/.test(na) && (searchMode ? compact.length >= 4 : ta.size >= 2 && compact.length >= 6);
   const boost = queryInCandidate && querySubstantial ? 0.9 : 0;
   const score = Math.max(dice * 0.6 + jaccard * 0.4, boost);
   const missesSignificantWord = [...ta].some((t) => t.length >= 4 && !tb.has(t));
@@ -419,7 +420,7 @@ async function searchCatalog(query, limit = 12) {
   const rows = data ?? [];
   const byNorm = /* @__PURE__ */ new Map();
   for (const r of rows) {
-    const score = titleSimilarity(query, r.name);
+    const score = titleSimilarity(query, r.name, true);
     if (score < CONFIDENCE.REVIEW) continue;
     const s = { ...r, score };
     let g = byNorm.get(r.name_norm);
@@ -537,12 +538,12 @@ async function liveSearchUniversal(query) {
       switchTitle: m?.item.title ?? null,
       switchConfidence: m ? Number(m.score.toFixed(3)) : 0,
       switchStatus: m?.status ?? "unavailable",
-      relevance: titleSimilarity(query, s.name)
+      relevance: titleSimilarity(query, s.name, true)
     });
   }
   for (const na of naItems) {
     if (usedNa.has(na.nsuid)) continue;
-    const rel = titleSimilarity(query, na.title);
+    const rel = titleSimilarity(query, na.title, true);
     if (rel < CONFIDENCE.REVIEW) continue;
     candidates.push({
       title: na.title,
