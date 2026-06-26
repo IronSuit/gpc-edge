@@ -148,7 +148,7 @@ function diceCoefficient(a, b) {
   }
   return 2 * overlap / (totalA + totalB);
 }
-function titleSimilarity(a, b, searchMode = false) {
+function titleSimilarity(a, b) {
   const na = normalizeTitle(a);
   const nb = normalizeTitle(b);
   if (!na || !nb) return 0;
@@ -157,20 +157,42 @@ function titleSimilarity(a, b, searchMode = false) {
   const dice = diceCoefficient(na, nb);
   const ta = new Set(na.split(" "));
   const tb = new Set(nb.split(" "));
-  const tbArr = [...tb];
-  const tokenIn = (t) => tb.has(t) || (searchMode && t.length >= 3 && tbArr.some((c) => c.startsWith(t)));
   let inter = 0;
-  for (const t of ta) if (tokenIn(t)) inter++;
+  for (const t of ta) if (tb.has(t)) inter++;
   const union = (/* @__PURE__ */ new Set([...ta, ...tb])).size;
   const jaccard = union ? inter / union : 0;
   const queryInCandidate = inter === ta.size && tb.size >= ta.size;
-  const compact = na.replace(/ /g, "");
-  const querySubstantial = /[a-z]{4}/.test(na) && (searchMode ? compact.length >= 4 : ta.size >= 2 && compact.length >= 6);
+  const querySubstantial = ta.size >= 2 && na.replace(/ /g, "").length >= 6 && /[a-z]{4}/.test(na);
   const boost = queryInCandidate && querySubstantial ? 0.9 : 0;
   const score = Math.max(dice * 0.6 + jaccard * 0.4, boost);
-  const missesSignificantWord = [...ta].some((t) => t.length >= 4 && !tokenIn(t));
+  const missesSignificantWord = [...ta].some((t) => t.length >= 4 && !tb.has(t));
   if (missesSignificantWord && !queryInCandidate && dice < 0.85) return Math.min(score, 0.55);
   return score;
+}
+function localSearchScore(query, name) {
+  const q = normalizeTitle(query);
+  const n = normalizeTitle(name);
+  if (!q || !n) return 0;
+  if (q === n) return 1;
+  const qt = q.split(" ").filter(Boolean);
+  const nt = n.split(" ").filter(Boolean);
+  if (!qt.length || !nt.length) return 0;
+  let closeness = 0;
+  for (const t of qt) {
+    let best = 0;
+    for (const c of nt) {
+      if (c === t) {
+        best = 1;
+        break;
+      }
+      if (t.length >= 2 && c.startsWith(t)) best = Math.max(best, t.length / c.length);
+    }
+    if (best === 0) return 0;
+    closeness += best;
+  }
+  closeness /= qt.length;
+  const coverage = Math.min(1, qt.join("").length / nt.join("").length);
+  return Math.min(0.99, 0.64 + 0.3 * closeness + 0.06 * coverage);
 }
 function bestMatch(query, candidates) {
   let best = null;
@@ -422,7 +444,7 @@ async function searchCatalog(query, limit = 12) {
   const rows = data ?? [];
   const byNorm = /* @__PURE__ */ new Map();
   for (const r of rows) {
-    const score = titleSimilarity(query, r.name, true);
+    const score = localSearchScore(query, r.name);
     if (score < CONFIDENCE.REVIEW) continue;
     const s = { ...r, score };
     let g = byNorm.get(r.name_norm);
@@ -547,12 +569,12 @@ async function liveSearchUniversal(query) {
       switchTitle: m?.item.title ?? null,
       switchConfidence: m ? Number(m.score.toFixed(3)) : 0,
       switchStatus: m?.status ?? "unavailable",
-      relevance: titleSimilarity(query, s.name, true)
+      relevance: localSearchScore(query, s.name)
     });
   }
   for (const na of naItems) {
     if (usedNa.has(na.nsuid)) continue;
-    const rel = titleSimilarity(query, na.title, true);
+    const rel = localSearchScore(query, na.title);
     if (rel < CONFIDENCE.REVIEW) continue;
     candidates.push({
       title: na.title,
