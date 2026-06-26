@@ -264,6 +264,15 @@ async function getSteamWishlist(input) {
   }
   return out;
 }
+const steamCover = (appid) => `https://cdn.cloudflare.steamstatic.com/steam/apps/${appid}/library_600x900.jpg`;
+function ninArt(raw) {
+  if (!raw) return null;
+  const s = String(raw);
+  if (s.startsWith("http")) return s;
+  if (s.startsWith("/")) return `https://www.nintendo.com${s}`;
+  return `https://assets.nintendo.com/image/upload/c_fill,f_auto,q_auto,w_600/${s}`;
+}
+const ART_RANK = { NA: 0, EU: 1, JP: 2, HK: 3 };
 async function searchNA(query) {
   const data = await getJson(
     "https://u3b6gr4ua3-dsn.algolia.net/1/indexes/store_game_en_us/query",
@@ -280,17 +289,17 @@ async function searchNA(query) {
   const out = [];
   for (const h of data.hits ?? []) {
     const nsuid = h.nsuid ?? h.nsuids?.[0];
-    if (nsuid && h.title) out.push({ title: h.title, nsuid: cleanNsuid(String(nsuid)) });
+    if (nsuid && h.title) out.push({ title: h.title, nsuid: cleanNsuid(String(nsuid)), art: ninArt(h.boxart ?? h.productImage ?? h.horizontalHeaderImage) });
   }
   return out;
 }
 async function searchEU(query) {
-  const url = `https://search.nintendo-europe.com/en/select?q=${encodeURIComponent(query)}&fq=type:GAME&rows=24&wt=json&fl=title,nsuid_txt,product_code_txt`;
+  const url = `https://search.nintendo-europe.com/en/select?q=${encodeURIComponent(query)}&fq=type:GAME&rows=24&wt=json&fl=title,nsuid_txt,product_code_txt,image_url_sq_s,image_url_h2x1_s`;
   const data = await getJson(url);
   const out = [];
   for (const d of data.response?.docs ?? []) {
     const nsuid = d.nsuid_txt?.[0];
-    if (nsuid && d.title) out.push({ title: d.title, nsuid, code: gameCode4(d.product_code_txt?.[0]) });
+    if (nsuid && d.title) out.push({ title: d.title, nsuid, code: gameCode4(d.product_code_txt?.[0]), art: ninArt(d.image_url_sq_s ?? d.image_url_h2x1_s) });
   }
   return out;
 }
@@ -300,7 +309,7 @@ async function searchJP(query) {
   const out = [];
   for (const it of data.result?.items ?? []) {
     const nsuid = it.id ? cleanNsuid(it.id) : "";
-    if (nsuid && it.title) out.push({ title: it.title, nsuid, code: gameCode4(it.icode) });
+    if (nsuid && it.title) out.push({ title: it.title, nsuid, code: gameCode4(it.icode), art: ninArt(it.iurl ?? it.siurl) });
   }
   return out;
 }
@@ -329,7 +338,8 @@ function titleMatchLink(catalog, candidates, title) {
     matchedTitle: m.item.title,
     confidence: Number(m.score.toFixed(3)),
     status: m.status,
-    via: "title"
+    via: "title",
+    art: m.item.art ?? null
   };
 }
 async function resolveEshopLive(title, catalogs) {
@@ -449,12 +459,16 @@ async function searchCatalog(query, limit = 12) {
     const s = { ...r, score };
     let g = byNorm.get(r.name_norm);
     if (!g) {
-      g = { best: s };
+      g = { best: s, artRank: 99 };
       byNorm.set(r.name_norm, g);
     }
     if (s.score > g.best.score) g.best = s;
     if (s.kind === "steam" && !g.steam) g.steam = s;
     if (s.kind === "eshop" && s.catalog === "NA" && !g.na) g.na = s;
+    if (s.kind === "eshop" && s.art) {
+      const rank = ART_RANK[s.catalog ?? ""] ?? 4;
+      if (!g.art || rank < g.artRank) { g.art = s.art; g.artRank = rank; }
+    }
   }
   const candidates = [];
   for (const g of byNorm.values()) {
@@ -464,7 +478,8 @@ async function searchCatalog(query, limit = 12) {
       steamAppid: g.steam ? Number(g.steam.ref) : null,
       steamName: g.steam ? g.steam.name : null,
       naNsuid: g.na ? g.na.ref : null,
-      naTitle: g.na ? g.na.name : null
+      naTitle: g.na ? g.na.name : null,
+      art: g.art ?? null
     });
   }
   candidates.sort((a, b) => b.score - a.score);
@@ -517,8 +532,13 @@ async function appendSteamApp(appid, name) {
 async function appendEshopResolution(title, links) {
   const norm = normalizeTitle(title);
   if (!norm) return;
-  const rows = links.filter((l) => l.nsuid && l.status !== "unavailable").map((l) => ({ catalog: l.catalog, nsuid: l.nsuid, title_id: null, name: title, name_norm: norm, source: "live" }));
-  if (rows.length) await sb().from("cat_eshop").upsert(rows, { onConflict: "catalog,nsuid", ignoreDuplicates: true });
+  const live = links.filter((l) => l.nsuid && l.status !== "unavailable");
+  if (!live.length) return;
+  const rows = live.map((l) => ({ catalog: l.catalog, nsuid: l.nsuid, title_id: null, name: title, name_norm: norm, source: "live", art_url: l.art ?? null }));
+  await sb().from("cat_eshop").upsert(rows, { onConflict: "catalog,nsuid", ignoreDuplicates: true });
+  for (const l of live) {
+    if (l.art) await sb().from("cat_eshop").update({ art_url: l.art }).eq("catalog", l.catalog).eq("nsuid", l.nsuid).is("art_url", null);
+  }
 }
 function catalogToCandidate(c) {
   return {
@@ -530,7 +550,8 @@ function catalogToCandidate(c) {
     switchTitle: c.naTitle,
     switchConfidence: c.naNsuid ? Number(c.score.toFixed(3)) : 0,
     switchStatus: c.naNsuid ? c.score >= CONFIDENCE.AUTO ? "confirmed" : "needs_review" : "unavailable",
-    relevance: c.score
+    relevance: c.score,
+    cover: c.steamAppid != null ? steamCover(c.steamAppid) : c.art
   };
 }
 async function searchUniversal(query) {
@@ -555,6 +576,11 @@ async function liveSearchUniversal(query) {
   ]);
   for (const s of steamItems) await appendSteamApp(s.appid, s.name).catch(() => {
   });
+  await Promise.all(
+    naItems.filter((na) => na.art).map((na) => sb().from("cat_eshop").update({ art_url: na.art }).eq("catalog", "NA").eq("nsuid", na.nsuid).is("art_url", null).then(() => {
+    }, () => {
+    }))
+  );
   const candidates = [];
   const usedNa = /* @__PURE__ */ new Set();
   for (const s of steamItems.slice(0, 10)) {
@@ -569,7 +595,8 @@ async function liveSearchUniversal(query) {
       switchTitle: m?.item.title ?? null,
       switchConfidence: m ? Number(m.score.toFixed(3)) : 0,
       switchStatus: m?.status ?? "unavailable",
-      relevance: localSearchScore(query, s.name)
+      relevance: localSearchScore(query, s.name),
+      cover: steamCover(s.appid)
     });
   }
   for (const na of naItems) {
@@ -585,7 +612,8 @@ async function liveSearchUniversal(query) {
       switchTitle: na.title,
       switchConfidence: Number(rel.toFixed(3)),
       switchStatus: rel >= CONFIDENCE.AUTO ? "confirmed" : "needs_review",
-      relevance: rel
+      relevance: rel,
+      cover: na.art ?? null
     });
   }
   const deduped = [];
