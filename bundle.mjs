@@ -641,6 +641,18 @@ async function addGameFromSearch(candidate, source = "search") {
     links.push({ game_id: gameId, store: "eshop", catalog: r.catalog, external_id: r.nsuid, matched_title: r.matchedTitle, status: r.status, confidence: r.confidence });
   }
   await upsertLinks(links);
+  let cover = candidate.steamAppid ? steamCover(candidate.steamAppid) : null;
+  if (!cover) {
+    cover = resolved.find((r) => r.art)?.art ?? null;
+    if (!cover) {
+      const eshop = resolved.filter((r) => r.nsuid && r.status !== "unavailable").sort((a, b) => (ART_RANK[a.catalog] ?? 4) - (ART_RANK[b.catalog] ?? 4));
+      for (const r of eshop) {
+        const { data } = await sb().from("cat_eshop").select("art_url").eq("catalog", r.catalog).eq("nsuid", r.nsuid).limit(1).maybeSingle();
+        if (data?.art_url) { cover = data.art_url; break; }
+      }
+    }
+  }
+  if (cover) await sb().from("games").update({ cover_url: cover }).eq("game_id", gameId).then(() => {}, () => {});
   if (candidate.steamAppid) await appendSteamApp(candidate.steamAppid, candidate.title).catch(() => {
   });
   await addToWishlist(gameId, source);
