@@ -157,8 +157,10 @@ function titleSimilarity(a, b, searchMode = false) {
   const dice = diceCoefficient(na, nb);
   const ta = new Set(na.split(" "));
   const tb = new Set(nb.split(" "));
+  const tbArr = [...tb];
+  const tokenIn = (t) => tb.has(t) || (searchMode && t.length >= 3 && tbArr.some((c) => c.startsWith(t)));
   let inter = 0;
-  for (const t of ta) if (tb.has(t)) inter++;
+  for (const t of ta) if (tokenIn(t)) inter++;
   const union = (/* @__PURE__ */ new Set([...ta, ...tb])).size;
   const jaccard = union ? inter / union : 0;
   const queryInCandidate = inter === ta.size && tb.size >= ta.size;
@@ -166,7 +168,7 @@ function titleSimilarity(a, b, searchMode = false) {
   const querySubstantial = /[a-z]{4}/.test(na) && (searchMode ? compact.length >= 4 : ta.size >= 2 && compact.length >= 6);
   const boost = queryInCandidate && querySubstantial ? 0.9 : 0;
   const score = Math.max(dice * 0.6 + jaccard * 0.4, boost);
-  const missesSignificantWord = [...ta].some((t) => t.length >= 4 && !tb.has(t));
+  const missesSignificantWord = [...ta].some((t) => t.length >= 4 && !tokenIn(t));
   if (missesSignificantWord && !queryInCandidate && dice < 0.85) return Math.min(score, 0.55);
   return score;
 }
@@ -517,6 +519,13 @@ async function searchUniversal(query) {
   }
   return liveSearchUniversal(query);
 }
+async function searchLocal(query) {
+  const local = await searchCatalog(query, 12);
+  return local.candidates.map(catalogToCandidate);
+}
+function searchLive(query) {
+  return liveSearchUniversal(query);
+}
 async function liveSearchUniversal(query) {
   const [steamItems, naItems] = await Promise.all([
     searchSteam(query, "us").catch(() => []),
@@ -676,7 +685,8 @@ Deno.serve(async (req) => {
     if (route === "search") {
       const q = url.searchParams.get("q")?.trim() ?? "";
       if (!q) return _json({ candidates: [] });
-      return _json({ candidates: await searchUniversal(q) });
+      const global = url.searchParams.get("global") === "1";
+      return _json({ candidates: global ? await searchLive(q) : await searchLocal(q) });
     }
     if (route === "add") {
       const body = await req.json().catch(() => ({}));
